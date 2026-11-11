@@ -19,14 +19,16 @@ where
     {
         let (sink, source): (mpsc::Sender<T>, mpsc::Receiver<T>) = mpsc::channel();
 
-        thread::Builder::new().name("TimeoutIterator::sender".to_owned()).spawn(move || {
-            for item in iter {
-                if let Err(e) = sink.send(item) {
-                    eprintln!("TimeoutIterator:: Error sending data to channel. Receiver may have closed. Closing up sender. Error: {}", e);
-                    return;
+        thread::Builder::new()
+            .name("TimeoutIterator::sender".to_owned())
+            .spawn(move || {
+                for item in iter {
+                    if sink.send(item).is_err() {
+                        // The receiver was dropped: nobody is listening, stop quietly.
+                        return;
+                    }
                 }
-            }
-        })?;
+            })?;
 
         Ok(TimeoutIterator {
             source,
@@ -83,16 +85,8 @@ impl<T> Iterator for TimeoutIterator<T> {
             return Some(self.buffer.remove(0));
         };
 
-        match self.source.recv() {
-            Ok(item) => Some(item),
-            Err(e) => {
-                eprintln!(
-                    "TimeoutIterator:: Error occurred reading from source: {}.",
-                    e
-                );
-                None
-            }
-        }
+        // A closed channel simply means the underlying iterator is exhausted.
+        self.source.recv().ok()
     }
 }
 

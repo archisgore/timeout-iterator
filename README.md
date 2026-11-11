@@ -29,11 +29,21 @@ When feature `sync` is used.
 
 The iterator is obvious and intuitive:
 
-```.rust
+```rust
+# #[cfg(feature = "sync")]
+# fn main() {
 use timeout_iterator::synchronous::TimeoutIterator;
 
 let numbers: Vec<u32> = vec![1, 2, 3, 4, 5];
 let mut ti = TimeoutIterator::with_iter(numbers.into_iter()).unwrap();
+
+assert_eq!(ti.next(), Some(1));
+// Reaching the end of the input yields `None`, silently.
+assert_eq!(ti.by_ref().count(), 4);
+assert_eq!(ti.next(), None);
+# }
+# #[cfg(not(feature = "sync"))]
+# fn main() {}
 ```
 
 This will iterate over all the integers in the Vector.
@@ -42,9 +52,11 @@ However, if the underlying iterator is bursty, you can break out of iteration af
 This has practical applications when tailing log files - you can wait for a timeout to publish or process
 groups of lines of log.
 
-```.rust
+```rust,no_run
+# #[cfg(feature = "sync")]
+# fn main() {
 use timeout_iterator::synchronous::TimeoutIterator;
-use timeout_iterator::error::TimeoutIteratorError;
+use timeout_iterator::error::Error;
 use std::io::{BufReader, BufRead};
 use std::fs::File;
 use std::time::Duration;
@@ -61,14 +73,18 @@ loop {
        Ok(Err(_)) => {
            // TimeoutIterator succeeded, underlying iterator provided an error
        },
-       Err(TimeoutIteratorError::TimedOut) => {
+       Err(Error::TimedOut) => {
            // timed out waiting for underlying iterator to provide something
        },
        Err(_) => {
-           // other TimeoutIterator error
+           // other TimeoutIterator error (e.g. the underlying iterator is exhausted)
+           break;
        }
    }
 }
+# }
+# #[cfg(not(feature = "sync"))]
+# fn main() {}
 ```
 
 There is a similar `peek_timeout` function to peek the next entry (or timeout doing so), so you
@@ -79,70 +95,98 @@ can see if anything is coming down the line without consuming it.
 
 When feature `async` is used.
 
-The stream wrapper is intuitive:
+`TimeoutStream` wraps any `Stream`. Its `peek`, `peek_timeout` and `next_timeout` methods take `Pin<&mut Self>`,
+so pin the stream first (for example with `Box::pin`) and call them through `as_mut()`:
 
-```.rust
-    let numbers: Vec<u32> = vec![1, 2, 3, 4, 5];
-    let numbers_stream = iter(numbers.into_iter());
+```rust
+# #[cfg(feature = "async")]
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+use futures::stream::iter;
+use timeout_iterator::asynchronous::TimeoutStream;
+use tokio_stream::StreamExt;
 
-    let mut ti = TimeoutStream::with_stream(numbers_stream).await?;
+let numbers: Vec<u32> = vec![1, 2, 3, 4, 5];
+let numbers_stream = iter(numbers.into_iter());
+
+let mut ti = Box::pin(TimeoutStream::with_stream(numbers_stream).await.unwrap());
+# }
+# #[cfg(not(feature = "async"))]
+# fn main() {}
 ```
 
-You can use it like any other Stream:
+You can use it like any other Stream, and peek the next value without consuming it:
 
-```.rust
-            assert_eq!(ti.next().await?, 1);
-            assert_eq!(ti.next().await?, 2);
-            assert_eq!(ti.next().await?, 3);
-            assert_eq!(ti.next().await?, 4);
-            assert_eq!(ti.next().await?, 5);
+```rust
+# #[cfg(feature = "async")]
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+# use futures::stream::iter;
+# use timeout_iterator::asynchronous::TimeoutStream;
+# use tokio_stream::StreamExt;
+# let mut ti = Box::pin(TimeoutStream::with_stream(iter(vec![1u32, 2, 3, 4, 5])).await.unwrap());
+// Can peek many times
+assert_eq!(*ti.as_mut().peek().await.unwrap(), 1);
+assert_eq!(*ti.as_mut().peek().await.unwrap(), 1);
+
+// And then consume with `next`
+assert_eq!(ti.next().await.unwrap(), 1);
+assert_eq!(ti.next().await.unwrap(), 2);
+assert_eq!(ti.next().await.unwrap(), 3);
+assert_eq!(ti.next().await.unwrap(), 4);
+assert_eq!(ti.next().await.unwrap(), 5);
+assert!(ti.next().await.is_none());
+# }
+# #[cfg(not(feature = "async"))]
+# fn main() {}
 ```
 
-You can peek the next value without consuming it:
+You can peek or consume with a timeout and catch the `Error::TimedOut` error:
 
-```.rust
-    // Can peek many times
-    assert_eq!(ti.peek().await.unwrap(), 1);
-    assert_eq!(ti.peek().await.unwrap(), 1);
-    assert_eq!(ti.peek().await.unwrap(), 1);
-    assert_eq!(ti.peek().await.unwrap(), 1);
+```rust
+# #[cfg(feature = "async")]
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+use futures::stream::iter;
+use std::time::Duration;
+use timeout_iterator::asynchronous::TimeoutStream;
+use timeout_iterator::error::Error;
+use tokio_stream::StreamExt;
 
-    // And then consume with 'next`
-    assert_eq!(ti.next().await.unwrap(), 3);
+let numbers: Vec<u32> = vec![1, 2, 3, 4, 5];
+
+// Slow down the numbers to stream
+let throttled_numbers = iter(numbers.into_iter()).throttle(Duration::from_millis(400));
+let mut ti = Box::pin(TimeoutStream::with_stream(Box::pin(throttled_numbers)).await.unwrap());
+
+// First number is always available
+assert_eq!(ti.next().await.unwrap(), 1);
+
+// 2nd number will time out well before it is ready
+assert!(matches!(
+    ti.as_mut().next_timeout(Duration::from_millis(10)).await.unwrap_err(),
+    Error::TimedOut
+));
+
+// Will consume it if called blocking: the timed out call did not lose the item
+assert_eq!(ti.next().await.unwrap(), 2);
+
+// Peek with timeout will... timeout
+assert!(matches!(
+    ti.as_mut().peek_timeout(Duration::from_millis(10)).await.unwrap_err(),
+    Error::TimedOut
+));
+
+// a blocking peek will eventually succeed
+// we dereference the peek because it's a reference (not move)
+assert_eq!(*ti.as_mut().peek().await.unwrap(), 3);
+
+// The number will be consumed
+assert_eq!(ti.next().await.unwrap(), 3);
+
+// As proven by the next number
+assert_eq!(ti.next().await.unwrap(), 4);
+# }
+# #[cfg(not(feature = "async"))]
+# fn main() {}
 ```
-
-You can peek or consume with a timeout and catch the Error::TimedOut error:
-
-```.rust
-
-    let numbers: Vec<u32> = vec![1, 2, 3, 4, 5];
-
-    // Slow down the numbers to stream
-    let throttled_numbers = iter(numbers.into_iter())
-        .throttle(Duration::from_secs(1));
-
-    let mut ti = TimeoutStream::with_stream(throttled_numbers).await.unwrap();
-
-    // First number is always available
-    assert_eq!(ti.next().await.unwrap(), 1);
-
-    // 2nd number will timeout at half a second in
-    assert_matches!(ti.next_timeout(Duration::from_millis(500)).await.unwrap_err(), Error::TimedOut);
-
-    // Will consume it if called blocking
-    assert_eq!(ti.next().await.unwrap(), 2);
-
-    // Peek with timeout will... timeout
-    assert_matches!(ti.peek_timeout(Duration::from_millis(500)).await.unwrap_err(), Error::TimedOut);
-
-    // a blocking peek will eventually succeed
-    // we dereference the peek because it's a reference (not move)
-    assert_eq!(*ti.peek().await.unwrap(), 3);
-
-    // The number will be consumed
-    assert_eq!(ti.next().await.unwrap(), 3);
-
-    // As proven by the next number
-    assert_eq!(ti.next().await.unwrap(), 4);
-```
-
