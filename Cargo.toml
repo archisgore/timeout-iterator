@@ -1,13 +1,13 @@
 [package]
 name = "timeout-iterator"
-version = "1.1.7"
+version = "1.1.8"
 authors = ["Archis Gore <archis@polyverse.io>"]
 edition = "2018"
 license = "Apache-2.0"
 categories = ["asynchronous", "caching", "rust-patterns"]
 keywords = ["iterator", "wrapper", "timeout", "peek", "buffer"]
 readme = "README.md"
-repository = "https://github.com/polyverse/timeout-iterator"
+repository = "https://github.com/archisgore/timeout-iterator"
 
 description = """TimeoutIterator is a wrapper over any iterator that adds peek_timeout and next_timeout functions.
 The canonical use-case is parsing multi-line free-form records (such as tailing a log fime) where it is desirable to
@@ -24,14 +24,14 @@ sync = []
 
 [dependencies]
 # Optional - only enabled through the "async" feature
-futures = { version = "0.3.19", optional = true }
-futures-util = { version = "0.3.19", optional = true }
-tokio = { version = "1.15.0", features = ["time"], optional = true }
-tokio-stream = { version = "0.1.8", optional = true }
-pin-project = { version = "1.0.8", optional = true }
+futures = { version = "0.3.34", optional = true }
+futures-util = { version = "0.3.34", optional = true }
+tokio = { version = "1.54.1", features = ["time"], optional = true }
+tokio-stream = { version = "0.1.19", optional = true }
+pin-project = { version = "1.1.13", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.15.0", features = ["time", "rt", "macros"]}
+tokio = { version = "1.54.1", features = ["time", "rt", "macros"]}
 assert_matches = "1.5.0"
 
 [package.metadata.cargo-all-features]
